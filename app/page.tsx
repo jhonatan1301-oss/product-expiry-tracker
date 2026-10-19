@@ -18,6 +18,13 @@ type ProductForm = {
   notes: string;
 };
 
+type AlertMode = 'expired' | 'critical' | 'soon' | 'normal';
+
+type ProductWithStatus = Product & {
+  daysLeft: number;
+  status: AlertMode;
+};
+
 const emptyForm: ProductForm = {
   name: '',
   expiry_date: '',
@@ -42,35 +49,82 @@ const getDaysRemaining = (dateString: string) => {
   const target = new Date(`${dateString}T00:00:00`);
   target.setHours(0, 0, 0, 0);
 
-  const diff = target.getTime() - today.getTime();
-  return Math.ceil(diff / (1000 * 60 * 60 * 24));
+  return Math.ceil((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 };
 
-const getAlertLevel = (days: number) => {
-  if (days < 0) return { label: 'Expired', tone: 'danger' };
-  if (days <= 1) return { label: 'Critical', tone: 'danger' };
-  if (days <= 3) return { label: 'Soon', tone: 'warn' };
-  return { label: 'Normal', tone: 'safe' };
+const getAlertState = (daysLeft: number): AlertMode => {
+  if (daysLeft < 0) return 'expired';
+  if (daysLeft <= 1) return 'critical';
+  if (daysLeft <= 3) return 'soon';
+  return 'normal';
+};
+
+const getAlertMeta = (status: AlertMode) => {
+  switch (status) {
+    case 'expired':
+      return { label: 'Expired', tone: 'danger' };
+    case 'critical':
+      return { label: 'Critical', tone: 'danger' };
+    case 'soon':
+      return { label: 'Soon', tone: 'warning' };
+    default:
+      return { label: 'Healthy', tone: 'safe' };
+  }
 };
 
 export default function HomePage() {
   const [pinInput, setPinInput] = useState('');
   const [signedIn, setSignedIn] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | AlertMode>('all');
   const [form, setForm] = useState<ProductForm>(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [isFallback, setIsFallback] = useState(false);
 
-  const alertSummary = useMemo(() => {
+  const enrichedProducts = useMemo<ProductWithStatus[]>(() => {
     return products
       .map((product) => {
-        const days = getDaysRemaining(product.expiry_date);
-        return { ...product, days };
+        const daysLeft = getDaysRemaining(product.expiry_date);
+        return {
+          ...product,
+          daysLeft,
+          status: getAlertState(daysLeft),
+        };
       })
-      .sort((a, b) => a.days - b.days);
+      .sort((a, b) => {
+        if (a.status === b.status) {
+          return a.daysLeft - b.daysLeft;
+        }
+
+        const order: Record<AlertMode, number> = {
+          expired: 0,
+          critical: 1,
+          soon: 2,
+          normal: 3,
+        };
+
+        return order[a.status] - order[b.status];
+      });
   }, [products]);
+
+  const filteredProducts = useMemo(() => {
+    return enrichedProducts.filter((product) => {
+      const matchesSearch = product.name.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesStatus = statusFilter === 'all' || product.status === statusFilter;
+      return matchesSearch && matchesStatus;
+    });
+  }, [enrichedProducts, searchTerm, statusFilter]);
+
+  const stats = useMemo(() => {
+    return {
+      critical: enrichedProducts.filter((item) => item.status === 'critical').length,
+      soon: enrichedProducts.filter((item) => item.status === 'soon').length,
+      expired: enrichedProducts.filter((item) => item.status === 'expired').length,
+    };
+  }, [enrichedProducts]);
 
   const loadProducts = async () => {
     if (!supabase) {
@@ -195,9 +249,6 @@ export default function HomePage() {
       setForm(emptyForm);
       setEditingId(null);
       setError('');
-      if (!supabase) {
-        setLoading(false);
-      }
       await loadProducts();
     } catch (err) {
       console.error(err);
@@ -233,42 +284,50 @@ export default function HomePage() {
 
   if (!signedIn) {
     return (
-      <main className="page-shell login-shell">
-        <div className="card auth-card">
-          <div className="eyebrow">Expiry Tracker</div>
-          <h1>Shared team access</h1>
-          <p>Enter the team PIN to continue.</p>
+      <main className="login-page">
+        <div className="login-panel">
+          <div className="brand-lockup">
+            <div className="brand-mark">E</div>
+            <div>
+              <p className="mini-label">Expiry tracker</p>
+              <h1>Team compliance</h1>
+            </div>
+          </div>
 
-          <form onSubmit={handleSignIn} className="stack">
-            <label className="field-label" htmlFor="pin">
-              PIN
-            </label>
-            <input
-              id="pin"
-              type="password"
-              inputMode="numeric"
-              value={pinInput}
-              onChange={(event) => setPinInput(event.target.value)}
-              placeholder="Enter PIN"
-              autoComplete="off"
-            />
-            <button type="submit" className="primary-button">
-              Access products
-            </button>
-          </form>
+          <div className="login-card">
+            <p>Enter the shared PIN to access the product list.</p>
 
-          {error ? <div className="error-box">{error}</div> : null}
+            <form onSubmit={handleSignIn} className="stack">
+              <label htmlFor="pin" className="field-label">
+                PIN code
+              </label>
+              <input
+                id="pin"
+                type="password"
+                inputMode="numeric"
+                value={pinInput}
+                onChange={(event) => setPinInput(event.target.value)}
+                placeholder="Enter 4-digit PIN"
+                autoComplete="off"
+              />
+              <button type="submit" className="primary-button login-button">
+                Access dashboard
+              </button>
+            </form>
+
+            {error ? <div className="error-box">{error}</div> : null}
+          </div>
         </div>
       </main>
     );
   }
 
   return (
-    <main className="page-shell">
-      <div className="topbar">
+    <main className="app-shell">
+      <div className="page-header">
         <div>
-          <div className="eyebrow">Product tracker</div>
-          <h1>Expiry overview</h1>
+          <p className="mini-label">Dashboard</p>
+          <h1>Product expiry overview</h1>
         </div>
         <button className="secondary-button" onClick={() => setSignedIn(false)}>
           Sign out
@@ -277,28 +336,24 @@ export default function HomePage() {
 
       {isFallback ? <div className="fallback-banner">Local browser mode active</div> : null}
 
-      <section className="summary-grid">
-        {alertSummary.slice(0, 3).map((item) => {
-          const alert = getAlertLevel(item.days);
-          return (
-            <div key={item.id} className={`summary-card ${alert.tone}`}>
-              <span>{alert.label}</span>
-              <strong>{item.name}</strong>
-              <small>
-                {item.days < 0
-                  ? `${Math.abs(item.days)} day${Math.abs(item.days) === 1 ? '' : 's'} overdue`
-                  : item.days === 0
-                    ? 'Expires today'
-                    : `In ${item.days} day${item.days === 1 ? '' : 's'}`}
-              </small>
-            </div>
-          );
-        })}
+      <section className="stats-grid">
+        <div className="stat-card danger">
+          <span className="stat-label">Expired</span>
+          <strong>{stats.expired}</strong>
+        </div>
+        <div className="stat-card warning">
+          <span className="stat-label">Critical</span>
+          <strong>{stats.critical}</strong>
+        </div>
+        <div className="stat-card safe">
+          <span className="stat-label">Soon</span>
+          <strong>{stats.soon}</strong>
+        </div>
       </section>
 
       <section className="content-grid">
-        <div className="card form-card">
-          <div className="card-header">
+        <div className="panel">
+          <div className="panel-header">
             <h2>{editingId ? 'Edit product' : 'Add product'}</h2>
           </div>
 
@@ -327,7 +382,7 @@ export default function HomePage() {
               <label htmlFor="notes">Notes</label>
               <textarea
                 id="notes"
-                rows={3}
+                rows={4}
                 value={form.notes}
                 onChange={(event) => setForm({ ...form, notes: event.target.value })}
                 placeholder="Optional notes"
@@ -340,6 +395,7 @@ export default function HomePage() {
               <button type="submit" className="primary-button">
                 {editingId ? 'Save changes' : 'Add product'}
               </button>
+
               {editingId ? (
                 <button
                   type="button"
@@ -357,51 +413,70 @@ export default function HomePage() {
           </form>
         </div>
 
-        <div className="card list-card">
-          <div className="card-header">
+        <div className="panel">
+          <div className="panel-header toolbar">
             <h2>Products</h2>
-            <span>{products.length} total</span>
+            <div className="toolbar-actions">
+              <input
+                aria-label="Search products"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Search..."
+              />
+              <select
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value as 'all' | AlertMode)}
+              >
+                <option value="all">All statuses</option>
+                <option value="expired">Expired</option>
+                <option value="critical">Critical</option>
+                <option value="soon">Soon</option>
+                <option value="normal">Healthy</option>
+              </select>
+            </div>
           </div>
 
           {loading ? (
             <p className="muted">Loading products...</p>
-          ) : products.length === 0 ? (
-            <p className="muted">No products yet. Add your first item.</p>
+          ) : filteredProducts.length === 0 ? (
+            <div className="empty-state">
+              <h3>No matching products</h3>
+              <p>Try another search or add a new product.</p>
+            </div>
           ) : (
             <div className="product-list">
-              {products.map((product) => {
-                const days = getDaysRemaining(product.expiry_date);
-                const alert = getAlertLevel(days);
+              {filteredProducts.map((product) => {
+                const meta = getAlertMeta(product.status);
 
                 return (
-                  <article key={product.id} className={`product-item ${alert.tone}`}>
+                  <article key={product.id} className={`product-item ${meta.tone}`}>
                     <div className="product-main">
                       <div className="product-topline">
                         <strong>{product.name}</strong>
-                        <span className={`badge ${alert.tone}`}>{alert.label}</span>
+                        <span className={`badge ${meta.tone}`}>{meta.label}</span>
                       </div>
 
-                      <p className="date-line">{formatDate(product.expiry_date)}</p>
+                      <div className="meta-row">
+                        <span>{formatDate(product.expiry_date)}</span>
+                        <span>
+                          {product.daysLeft < 0
+                            ? `${Math.abs(product.daysLeft)} day${Math.abs(product.daysLeft) === 1 ? '' : 's'} overdue`
+                            : product.daysLeft === 0
+                              ? 'Expires today'
+                              : `In ${product.daysLeft} day${product.daysLeft === 1 ? '' : 's'}`}
+                        </span>
+                      </div>
+
                       {product.notes ? <p className="notes">{product.notes}</p> : null}
                     </div>
 
                     <div className="product-actions">
-                      <small>
-                        {days < 0
-                          ? `${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} overdue`
-                          : days === 0
-                            ? 'Expires today'
-                            : `In ${days} day${days === 1 ? '' : 's'}`}
-                      </small>
-
-                      <div className="icon-row">
-                        <button type="button" onClick={() => handleEdit(product)}>
-                          Edit
-                        </button>
-                        <button type="button" className="danger" onClick={() => handleDelete(product.id)}>
-                          Delete
-                        </button>
-                      </div>
+                      <button type="button" onClick={() => handleEdit(product)}>
+                        Edit
+                      </button>
+                      <button type="button" className="danger" onClick={() => handleDelete(product.id)}>
+                        Delete
+                      </button>
                     </div>
                   </article>
                 );
